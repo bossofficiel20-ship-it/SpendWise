@@ -705,6 +705,13 @@ function renderHistory() {
             amount.className = 'txn-amount ' + (isIncome ? 'amount-income' : 'amount-expense');
             amount.textContent = (isIncome ? '+' : '−') + formatMoney(t.amount);
 
+            // Edit
+            const editBtn = document.createElement('button');
+            editBtn.className = 'txn-edit';
+            editBtn.setAttribute('aria-label', `Edit ${t.note || cat.name}`);
+            editBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg>';
+            editBtn.addEventListener('click', () => editTransaction(t.id));
+
             // Delete
             const delBtn = document.createElement('button');
             delBtn.className = 'txn-delete';
@@ -715,6 +722,7 @@ function renderHistory() {
             li.appendChild(icon);
             li.appendChild(info);
             li.appendChild(amount);
+            li.appendChild(editBtn);
             li.appendChild(delBtn);
 
             txnListEl.appendChild(li);
@@ -743,6 +751,34 @@ function formatShortDate(dateStr) {
 /* ============================================================
    ADD / DELETE TRANSACTIONS
    ============================================================ */
+function editTransaction(id) {
+    const txn = transactions.find(t => t.id === id);
+    if (!txn) return;
+
+    selectedType = txn.type || 'expense';
+
+    document.querySelectorAll('.type-btn').forEach(btn => {
+        const active = btn.dataset.type === selectedType;
+        btn.classList.toggle('active', active);
+        btn.setAttribute('aria-checked', active ? 'true' : 'false');
+    });
+
+    populateCategorySelect();
+
+    amountInput.value = txn.amount;
+    categorySelect.value = txn.category;
+    noteInput.value = txn.note || '';
+    dateInput.value = txn.date;
+
+    txnForm.dataset.editingId = id;
+    saveBtn.textContent = 'Update Transaction';
+
+    modalOverlay.hidden = false;
+    document.body.style.overflow = 'hidden';
+
+    setTimeout(() => amountInput.focus(), 120);
+}
+
 function deleteTransaction(id) {
     const txn = transactions.find(t => t.id === id);
     if (!txn) return;
@@ -800,16 +836,19 @@ function validateForm() {
 
 let isSaving = false;
 
-txnForm.addEventListener('submit', (e) => {
+txnForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     if (isSaving) return;
+
     const amount = validateForm();
     if (amount === null) return;
 
     isSaving = true;
 
+    const editingId = txnForm.dataset.editingId;
+
     const txn = {
-        id: 'txn_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+        id: editingId || ('txn_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8)),
         type: selectedType,
         amount: Math.round(amount * 100) / 100,
         category: categorySelect.value,
@@ -817,34 +856,57 @@ txnForm.addEventListener('submit', (e) => {
         date: dateInput.value
     };
 
-    transactions.push(txn);
-    saveData();
-    closeModal();
-    txnForm.reset();
+    try {
+        if (editingId) {
+            transactions = transactions.map(t => t.id === editingId ? txn : t);
+            saveData();
 
-    fetch(`${API_BASE}/transactions`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(txn)
-    })
-    .then(async response => {
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({}));
-            throw new Error(error.error || `API error: ${response.status}`);
+            const response = await fetch(`${API_BASE}/transactions/${encodeURIComponent(editingId)}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(txn)
+            });
+
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                throw new Error(error.error || `API error: ${response.status}`);
+            }
+
+            console.log('Transaction updated in Worker API.');
+        } else {
+            transactions.push(txn);
+            saveData();
+
+            const response = await fetch(`${API_BASE}/transactions`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(txn)
+            });
+
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                throw new Error(error.error || `API error: ${response.status}`);
+            }
+
+            console.log('Transaction saved to Worker API.');
         }
-        return response.json();
-    })
-    .then(() => {
-        console.log('Transaction saved to Worker API.');
-    })
-    .catch(err => {
+
+        delete txnForm.dataset.editingId;
+        saveBtn.textContent = 'Save Transaction';
+
+        closeModal();
+        txnForm.reset();
+        renderDashboard();
+    } catch (err) {
         console.error('Failed to save transaction to API:', err);
-    });
-    // Keep isSaving latched (modal is now closed) so a stray second
-    // submit event can't save a duplicate; reset happens in openModal().
-    renderDashboard();
+        formErrorEl.textContent = 'Could not sync with server. Please try again.';
+    } finally {
+        isSaving = false;
+    }
 });
 
 /* ============================================================

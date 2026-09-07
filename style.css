@@ -1173,3 +1173,21 @@ input, select, textarea { font-family: inherit; font-size: 1rem; color: var(--te
         transform: none;
     }
 }
+.txn-edit {
+    width: 34px;
+    height: 34px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    transition: background 0.25s ease, color 0.25s ease;
+}
+
+.txn-edit:hover {
+    background: var(--surface-2);
+    color: var(--text);
+}
+
+.txn-edit svg { width: 17px; height: 17px; }
