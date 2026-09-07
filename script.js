@@ -30,6 +30,11 @@ themeToggle.addEventListener('click', () => {
 });
 
 /* ============================================================
+   WORKER API
+   ============================================================ */
+const API_BASE = 'https://spendwise-worker.bossofficiel2-0.workers.dev/api';
+
+/* ============================================================
    CATEGORIES (fixed)
    ============================================================ */
 const CATEGORIES = {
@@ -68,6 +73,21 @@ function loadData() {
     } catch (err) {
         console.error('Failed to load data:', err);
         transactions = [];
+    }
+}
+
+async function loadTransactionsFromAPI() {
+    try {
+        const response = await fetch(`${API_BASE}/transactions`);
+        if (!response.ok) throw new Error(`API error: ${response.status}`);
+
+        const data = await response.json();
+        transactions = Array.isArray(data.transactions) ? data.transactions : [];
+        saveData();
+        renderDashboard();
+        console.log(`Loaded ${transactions.length} transaction(s) from Worker API.`);
+    } catch (err) {
+        console.error('Failed to load transactions from API:', err);
     }
 }
 
@@ -732,6 +752,10 @@ function deleteTransaction(id) {
     transactions = transactions.filter(t => t.id !== id);
     saveData();
     renderDashboard();
+
+    fetch(`${API_BASE}/transactions/${encodeURIComponent(id)}`, {
+        method: 'DELETE'
+    }).catch(err => console.error('Failed to delete transaction from API:', err));
 }
 
 /* ============================================================
@@ -797,6 +821,27 @@ txnForm.addEventListener('submit', (e) => {
     saveData();
     closeModal();
     txnForm.reset();
+
+    fetch(`${API_BASE}/transactions`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(txn)
+    })
+    .then(async response => {
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(error.error || `API error: ${response.status}`);
+        }
+        return response.json();
+    })
+    .then(() => {
+        console.log('Transaction saved to Worker API.');
+    })
+    .catch(err => {
+        console.error('Failed to save transaction to API:', err);
+    });
     // Keep isSaving latched (modal is now closed) so a stray second
     // submit event can't save a duplicate; reset happens in openModal().
     renderDashboard();
@@ -932,6 +977,7 @@ function init() {
     populateCategoryFilter();
     updateMonthLabel();
     renderDashboard();
+    loadTransactionsFromAPI();
 }
 
 init();
