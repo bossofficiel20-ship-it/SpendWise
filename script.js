@@ -33,6 +33,25 @@ themeToggle.addEventListener('click', () => {
    WORKER API
    ============================================================ */
 const API_BASE = 'https://spendwise-worker.bossofficiel2-0.workers.dev/api';
+const AUTH_TOKEN_KEY = 'spendwiseAuthToken';
+
+function getAuthToken() {
+    return localStorage.getItem(AUTH_TOKEN_KEY) || '';
+}
+
+function authFetch(url, options = {}) {
+    const headers = new Headers(options.headers || {});
+    const token = getAuthToken();
+
+    if (token) {
+        headers.set('Authorization', `Bearer ${token}`);
+    }
+
+    return fetch(url, {
+        ...options,
+        headers
+    });
+}
 
 /* ============================================================
    CATEGORIES (fixed)
@@ -78,7 +97,7 @@ function loadData() {
 
 async function loadTransactionsFromAPI() {
     try {
-        const response = await fetch(`${API_BASE}/transactions`);
+        const response = await authFetch(`${API_BASE}/transactions`);
         if (!response.ok) throw new Error(`API error: ${response.status}`);
 
         const data = await response.json();
@@ -789,7 +808,7 @@ function deleteTransaction(id) {
     saveData();
     renderDashboard();
 
-    fetch(`${API_BASE}/transactions/${encodeURIComponent(id)}`, {
+    authFetch(`${API_BASE}/transactions/${encodeURIComponent(id)}`, {
         method: 'DELETE'
     }).catch(err => console.error('Failed to delete transaction from API:', err));
 }
@@ -861,7 +880,7 @@ txnForm.addEventListener('submit', async (e) => {
             transactions = transactions.map(t => t.id === editingId ? txn : t);
             saveData();
 
-            const response = await fetch(`${API_BASE}/transactions/${encodeURIComponent(editingId)}`, {
+            const response = await authFetch(`${API_BASE}/transactions/${encodeURIComponent(editingId)}`, {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json'
@@ -879,7 +898,7 @@ txnForm.addEventListener('submit', async (e) => {
             transactions.push(txn);
             saveData();
 
-            const response = await fetch(`${API_BASE}/transactions`, {
+            const response = await authFetch(`${API_BASE}/transactions`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -1031,15 +1050,199 @@ importFileInput.addEventListener('change', () => {
 });
 
 /* ============================================================
+   AUTHENTICATION
+   ============================================================ */
+const authArea = document.getElementById('authArea');
+const loginBtn = document.getElementById('loginBtn');
+const signupBtn = document.getElementById('signupBtn');
+const authModalOverlay = document.getElementById('authModalOverlay');
+const authModalClose = document.getElementById('authModalClose');
+const authModalTitle = document.getElementById('authModalTitle');
+const authForm = document.getElementById('authForm');
+const authEmail = document.getElementById('authEmail');
+const authPassword = document.getElementById('authPassword');
+const authError = document.getElementById('authError');
+const authSubmitBtn = document.getElementById('authSubmitBtn');
+const authSwitchBtn = document.getElementById('authSwitchBtn');
+
+let authMode = 'login';
+let currentUser = null;
+
+function setAuthError(message) {
+    authError.textContent = message || '';
+}
+
+function openAuthModal(mode = 'login') {
+    authMode = mode;
+    authModalTitle.textContent = mode === 'login' ? 'Login' : 'Sign Up';
+    authSubmitBtn.textContent = mode === 'login' ? 'Login' : 'Create Account';
+    authSwitchBtn.textContent = mode === 'login'
+        ? "Don't have an account? Sign Up"
+        : 'Already have an account? Login';
+    authPassword.setAttribute('autocomplete', mode === 'login' ? 'current-password' : 'new-password');
+    setAuthError('');
+    authModalOverlay.hidden = false;
+    document.body.style.overflow = 'hidden';
+    setTimeout(() => authEmail.focus(), 120);
+}
+
+function closeAuthModal() {
+    authModalOverlay.hidden = true;
+    document.body.style.overflow = '';
+    authForm.reset();
+    setAuthError('');
+}
+
+function renderAuthUI() {
+    if (currentUser) {
+        authArea.innerHTML = `
+            <span class="auth-user" title="${currentUser.email}">${currentUser.email}</span>
+            <button class="btn btn-ghost-main auth-btn" id="logoutBtn">Logout</button>
+        `;
+        document.getElementById('logoutBtn').addEventListener('click', logout);
+    } else {
+        authArea.innerHTML = `
+            <button class="btn btn-primary auth-btn" id="loginBtn">Login</button>
+            <button class="btn btn-ghost-main auth-btn" id="signupBtn">Sign Up</button>
+        `;
+        document.getElementById('loginBtn').addEventListener('click', () => openAuthModal('login'));
+        document.getElementById('signupBtn').addEventListener('click', () => openAuthModal('signup'));
+    }
+}
+
+async function handleAuthSubmit(e) {
+    e.preventDefault();
+    setAuthError('');
+
+    const email = authEmail.value.trim();
+    const password = authPassword.value;
+
+    if (!email || !password) {
+        setAuthError('Please enter your email and password.');
+        return;
+    }
+
+    authSubmitBtn.disabled = true;
+    authSubmitBtn.textContent = authMode === 'login' ? 'Logging in...' : 'Creating account...';
+
+    try {
+        const endpoint = authMode === 'login' ? '/auth/login' : '/auth/register';
+        const response = await fetch(`${API_BASE}${endpoint}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password })
+        });
+
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+            throw new Error(data.error || `Authentication failed (${response.status})`);
+        }
+
+        localStorage.setItem(AUTH_TOKEN_KEY, data.token);
+        currentUser = data.user;
+        renderAuthUI();
+        closeAuthModal();
+
+        transactions = [];
+        saveData();
+        renderDashboard();
+        await loadTransactionsFromAPI();
+    } catch (err) {
+        console.error('Authentication error:', err);
+        setAuthError(err.message || 'Authentication failed.');
+    } finally {
+        authSubmitBtn.disabled = false;
+        authSubmitBtn.textContent = authMode === 'login' ? 'Login' : 'Create Account';
+    }
+}
+
+async function logout() {
+    try {
+        if (getAuthToken()) {
+            await authFetch(`${API_BASE}/auth/logout`, { method: 'POST' });
+        }
+    } catch (err) {
+        console.error('Logout request failed:', err);
+    }
+
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    currentUser = null;
+    transactions = [];
+    saveData();
+    renderDashboard();
+    renderAuthUI();
+}
+
+async function restoreAuthSession() {
+    const token = getAuthToken();
+
+    if (!token) {
+        currentUser = null;
+        renderAuthUI();
+        transactions = [];
+        renderDashboard();
+        return false;
+    }
+
+    try {
+        const response = await authFetch(`${API_BASE}/auth/me`);
+
+        if (!response.ok) {
+            localStorage.removeItem(AUTH_TOKEN_KEY);
+            currentUser = null;
+            renderAuthUI();
+            transactions = [];
+            renderDashboard();
+            return false;
+        }
+
+        const data = await response.json();
+        currentUser = data.user;
+        renderAuthUI();
+        return true;
+    } catch (err) {
+        console.error('Could not restore authentication:', err);
+        currentUser = null;
+        transactions = [];
+        renderDashboard();
+        renderAuthUI();
+        return false;
+    }
+}
+
+loginBtn.addEventListener('click', () => openAuthModal('login'));
+signupBtn.addEventListener('click', () => openAuthModal('signup'));
+authModalClose.addEventListener('click', closeAuthModal);
+
+authSwitchBtn.addEventListener('click', () => {
+    openAuthModal(authMode === 'login' ? 'signup' : 'login');
+});
+
+authModalOverlay.addEventListener('click', (e) => {
+    if (e.target === authModalOverlay) closeAuthModal();
+});
+
+authForm.addEventListener('submit', handleAuthSubmit);
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !authModalOverlay.hidden) closeAuthModal();
+});
+
+/* ============================================================
    INIT
    ============================================================ */
-function init() {
-    loadData();
+async function init() {
     populateCategorySelect();
     populateCategoryFilter();
     updateMonthLabel();
     renderDashboard();
-    loadTransactionsFromAPI();
+
+    const authenticated = await restoreAuthSession();
+
+    if (authenticated) {
+        await loadTransactionsFromAPI();
+    }
 }
 
 init();
