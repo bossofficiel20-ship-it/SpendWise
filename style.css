@@ -1244,3 +1244,35 @@ input, select, textarea { font-family: inherit; font-size: 1rem; color: var(--te
     }
 }
 
+
+@media (max-width: 520px) {
+    .nav-container {
+        gap: 8px;
+    }
+
+    .nav-logo {
+        gap: 7px;
+        min-width: 0;
+    }
+
+    .logo-text {
+        font-size: 0.95rem;
+    }
+
+    .auth-area {
+        gap: 4px;
+        margin-right: 0;
+    }
+
+    .auth-btn {
+        min-height: 36px;
+        padding: 6px 8px;
+        font-size: 0.76rem;
+    }
+
+    .theme-toggle {
+        width: 38px;
+        height: 38px;
+        flex-shrink: 0;
+    }
+}
