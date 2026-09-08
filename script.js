@@ -1009,42 +1009,96 @@ const exportBtn = document.getElementById('exportBtn');
 const importBtn = document.getElementById('importBtn');
 const importFileInput = document.getElementById('importFileInput');
 
-exportBtn.addEventListener('click', () => {
-    if (transactions.length === 0) {
-        alert('Nothing to export yet — add a transaction first.');
+exportBtn.addEventListener('click', async () => {
+    if (!currentUser) {
+        alert('Please login first.');
+        openAuthModal('login');
         return;
     }
-    const blob = new Blob([buildBackup()], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'expense-tracker-backup-' + todayKey() + '.json';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+
+    try {
+        const response = await authFetch(`${API_BASE}/export`);
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+            throw new Error(data.error || `Export failed (${response.status})`);
+        }
+
+        if (!Array.isArray(data.transactions) || data.transactions.length === 0) {
+            alert('Nothing to export yet — add a transaction first.');
+            return;
+        }
+
+        const backup = JSON.stringify({
+            app: 'expense-tracker',
+            version: 1,
+            exportedAt: new Date().toISOString(),
+            transactions: data.transactions
+        }, null, 2);
+
+        const blob = new Blob([backup], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'expense-tracker-backup-' + todayKey() + '.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    } catch (err) {
+        console.error('Export error:', err);
+        alert(err.message || 'Export failed.');
+    }
 });
 
-importBtn.addEventListener('click', () => importFileInput.click());
+importBtn.addEventListener('click', () => {
+    if (!currentUser) {
+        alert('Please login first.');
+        openAuthModal('login');
+        return;
+    }
+    importFileInput.click();
+});
 
 importFileInput.addEventListener('change', () => {
     const file = importFileInput.files && importFileInput.files[0];
     importFileInput.value = '';
     if (!file) return;
+
     const reader = new FileReader();
-    reader.onload = () => {
+
+    reader.onload = async () => {
         const result = parseBackup(String(reader.result));
+
         if (!result.ok) {
             alert(result.error);
             return;
         }
+
         if (!confirm('Import ' + result.list.length + ' transaction(s)? This will replace your current '
             + transactions.length + ' transaction(s).')) return;
-        transactions = result.list;
-        saveData();
-        renderDashboard();
-        alert('Imported ' + result.list.length + ' transaction(s).');
+
+        try {
+            const response = await authFetch(`${API_BASE}/transactions/bulk`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ transactions: result.list })
+            });
+
+            const data = await response.json().catch(() => ({}));
+
+            if (!response.ok) {
+                throw new Error(data.error || `Import failed (${response.status})`);
+            }
+
+            await loadTransactionsFromAPI();
+            alert('Imported ' + result.list.length + ' transaction(s).');
+        } catch (err) {
+            console.error('Import error:', err);
+            alert(err.message || 'Import failed.');
+        }
     };
+
     reader.onerror = () => alert('Could not read the file.');
     reader.readAsText(file);
 });
