@@ -26,6 +26,30 @@ themeToggle.addEventListener('click', () => {
 });
 
 /* ============================================================
+   WORKER API
+   ============================================================ */
+const API_BASE = 'https://spendwise-worker.bossofficiel2-0.workers.dev/api';
+const AUTH_TOKEN_KEY = 'spendwiseAuthToken';
+
+function getAuthToken() {
+    return localStorage.getItem(AUTH_TOKEN_KEY) || '';
+}
+
+function authFetch(url, options = {}) {
+    const headers = new Headers(options.headers || {});
+    const token = getAuthToken();
+
+    if (token) {
+        headers.set('Authorization', `Bearer ${token}`);
+    }
+
+    return fetch(url, {
+        ...options,
+        headers
+    });
+}
+
+/* ============================================================
    CATEGORIES (fixed)
    ============================================================ */
 const CATEGORIES = {
@@ -64,6 +88,21 @@ function loadData() {
     } catch (err) {
         console.error('Failed to load data:', err);
         transactions = [];
+    }
+}
+
+async function loadTransactionsFromAPI() {
+    try {
+        const response = await authFetch(`${API_BASE}/transactions`);
+        if (!response.ok) throw new Error(`API error: ${response.status}`);
+
+        const data = await response.json();
+        transactions = Array.isArray(data.transactions) ? data.transactions : [];
+        saveData();
+        renderDashboard();
+        console.log(`Loaded ${transactions.length} transaction(s) from Worker API.`);
+    } catch (err) {
+        console.error('Failed to load transactions from API:', err);
     }
 }
 
@@ -681,6 +720,13 @@ function renderHistory() {
             amount.className = 'txn-amount ' + (isIncome ? 'amount-income' : 'amount-expense');
             amount.textContent = (isIncome ? '+' : '−') + formatMoney(t.amount);
 
+            // Edit
+            const editBtn = document.createElement('button');
+            editBtn.className = 'txn-edit';
+            editBtn.setAttribute('aria-label', `Edit ${t.note || cat.name}`);
+            editBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg>';
+            editBtn.addEventListener('click', () => editTransaction(t.id));
+
             // Delete
             const delBtn = document.createElement('button');
             delBtn.className = 'txn-delete';
@@ -691,6 +737,7 @@ function renderHistory() {
             li.appendChild(icon);
             li.appendChild(info);
             li.appendChild(amount);
+            li.appendChild(editBtn);
             li.appendChild(delBtn);
 
             txnListEl.appendChild(li);
@@ -719,6 +766,34 @@ function formatShortDate(dateStr) {
 /* ============================================================
    ADD / DELETE TRANSACTIONS
    ============================================================ */
+function editTransaction(id) {
+    const txn = transactions.find(t => t.id === id);
+    if (!txn) return;
+
+    selectedType = txn.type || 'expense';
+
+    document.querySelectorAll('.type-btn').forEach(btn => {
+        const active = btn.dataset.type === selectedType;
+        btn.classList.toggle('active', active);
+        btn.setAttribute('aria-checked', active ? 'true' : 'false');
+    });
+
+    populateCategorySelect();
+
+    amountInput.value = txn.amount;
+    categorySelect.value = txn.category;
+    noteInput.value = txn.note || '';
+    dateInput.value = txn.date;
+
+    txnForm.dataset.editingId = id;
+    saveBtn.textContent = 'Update Transaction';
+
+    modalOverlay.hidden = false;
+    document.body.style.overflow = 'hidden';
+
+    setTimeout(() => amountInput.focus(), 120);
+}
+
 function deleteTransaction(id) {
     const txn = transactions.find(t => t.id === id);
     if (!txn) return;
@@ -728,6 +803,10 @@ function deleteTransaction(id) {
     transactions = transactions.filter(t => t.id !== id);
     saveData();
     renderDashboard();
+
+    authFetch(`${API_BASE}/transactions/${encodeURIComponent(id)}`, {
+        method: 'DELETE'
+    }).catch(err => console.error('Failed to delete transaction from API:', err));
 }
 
 /* ============================================================
@@ -772,16 +851,24 @@ function validateForm() {
 
 let isSaving = false;
 
-txnForm.addEventListener('submit', (e) => {
+txnForm.addEventListener('submit', async (e) => {
     e.preventDefault();
+    if (!currentUser) {
+        closeModal();
+        openAuthModal("login");
+        return;
+    }
     if (isSaving) return;
+
     const amount = validateForm();
     if (amount === null) return;
 
     isSaving = true;
 
+    const editingId = txnForm.dataset.editingId;
+
     const txn = {
-        id: 'txn_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+        id: editingId || ('txn_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8)),
         type: selectedType,
         amount: Math.round(amount * 100) / 100,
         category: categorySelect.value,
@@ -789,13 +876,57 @@ txnForm.addEventListener('submit', (e) => {
         date: dateInput.value
     };
 
-    transactions.push(txn);
-    saveData();
-    closeModal();
-    txnForm.reset();
-    // Keep isSaving latched (modal is now closed) so a stray second
-    // submit event can't save a duplicate; reset happens in openModal().
-    renderDashboard();
+    try {
+        if (editingId) {
+            transactions = transactions.map(t => t.id === editingId ? txn : t);
+            saveData();
+
+            const response = await authFetch(`${API_BASE}/transactions/${encodeURIComponent(editingId)}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(txn)
+            });
+
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                throw new Error(error.error || `API error: ${response.status}`);
+            }
+
+            console.log('Transaction updated in Worker API.');
+        } else {
+            transactions.push(txn);
+            saveData();
+
+            const response = await authFetch(`${API_BASE}/transactions`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(txn)
+            });
+
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                throw new Error(error.error || `API error: ${response.status}`);
+            }
+
+            console.log('Transaction saved to Worker API.');
+        }
+
+        delete txnForm.dataset.editingId;
+        saveBtn.textContent = 'Save Transaction';
+
+        closeModal();
+        txnForm.reset();
+        renderDashboard();
+    } catch (err) {
+        console.error('Failed to save transaction to API:', err);
+        formErrorEl.textContent = 'Could not sync with server. Please try again.';
+    } finally {
+        isSaving = false;
+    }
 });
 
 /* ============================================================
@@ -879,55 +1010,294 @@ const exportBtn = document.getElementById('exportBtn');
 const importBtn = document.getElementById('importBtn');
 const importFileInput = document.getElementById('importFileInput');
 
-exportBtn.addEventListener('click', () => {
-    if (transactions.length === 0) {
-        alert('Nothing to export yet — add a transaction first.');
+exportBtn.addEventListener('click', async () => {
+    if (!currentUser) {
+        alert('Please login first.');
+        openAuthModal('login');
         return;
     }
-    const blob = new Blob([buildBackup()], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'expense-tracker-backup-' + todayKey() + '.json';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+
+    try {
+        const response = await authFetch(`${API_BASE}/export`);
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+            throw new Error(data.error || `Export failed (${response.status})`);
+        }
+
+        if (!Array.isArray(data.transactions) || data.transactions.length === 0) {
+            alert('Nothing to export yet — add a transaction first.');
+            return;
+        }
+
+        const backup = JSON.stringify({
+            app: 'expense-tracker',
+            version: 1,
+            exportedAt: new Date().toISOString(),
+            transactions: data.transactions
+        }, null, 2);
+
+        const blob = new Blob([backup], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'expense-tracker-backup-' + todayKey() + '.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    } catch (err) {
+        console.error('Export error:', err);
+        alert(err.message || 'Export failed.');
+    }
 });
 
-importBtn.addEventListener('click', () => importFileInput.click());
+importBtn.addEventListener('click', () => {
+    if (!currentUser) {
+        alert('Please login first.');
+        openAuthModal('login');
+        return;
+    }
+    importFileInput.click();
+});
 
 importFileInput.addEventListener('change', () => {
     const file = importFileInput.files && importFileInput.files[0];
     importFileInput.value = '';
     if (!file) return;
+
     const reader = new FileReader();
-    reader.onload = () => {
+
+    reader.onload = async () => {
         const result = parseBackup(String(reader.result));
+
         if (!result.ok) {
             alert(result.error);
             return;
         }
+
         if (!confirm('Import ' + result.list.length + ' transaction(s)? This will replace your current '
             + transactions.length + ' transaction(s).')) return;
-        transactions = result.list;
-        saveData();
-        renderDashboard();
-        alert('Imported ' + result.list.length + ' transaction(s).');
+
+        try {
+            const response = await authFetch(`${API_BASE}/transactions/bulk`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ transactions: result.list })
+            });
+
+            const data = await response.json().catch(() => ({}));
+
+            if (!response.ok) {
+                throw new Error(data.error || `Import failed (${response.status})`);
+            }
+
+            await loadTransactionsFromAPI();
+            alert('Imported ' + result.list.length + ' transaction(s).');
+        } catch (err) {
+            console.error('Import error:', err);
+            alert(err.message || 'Import failed.');
+        }
     };
+
     reader.onerror = () => alert('Could not read the file.');
     reader.readAsText(file);
 });
 
 /* ============================================================
+   AUTHENTICATION
+   ============================================================ */
+const authArea = document.getElementById('authArea');
+const loginBtn = document.getElementById('loginBtn');
+const signupBtn = document.getElementById('signupBtn');
+const authModalOverlay = document.getElementById('authModalOverlay');
+const authModalClose = document.getElementById('authModalClose');
+const authModalTitle = document.getElementById('authModalTitle');
+const authForm = document.getElementById('authForm');
+const authEmail = document.getElementById('authEmail');
+const authPassword = document.getElementById('authPassword');
+const authError = document.getElementById('authError');
+const authSubmitBtn = document.getElementById('authSubmitBtn');
+const authSwitchBtn = document.getElementById('authSwitchBtn');
+
+let authMode = 'login';
+let currentUser = null;
+
+function setAuthError(message) {
+    authError.textContent = message || '';
+}
+
+function openAuthModal(mode = 'login') {
+    authMode = mode;
+    authModalTitle.textContent = mode === 'login' ? 'Login' : 'Sign Up';
+    authSubmitBtn.textContent = mode === 'login' ? 'Login' : 'Create Account';
+    authSwitchBtn.textContent = mode === 'login'
+        ? "Don't have an account? Sign Up"
+        : 'Already have an account? Login';
+    authPassword.setAttribute('autocomplete', mode === 'login' ? 'current-password' : 'new-password');
+    setAuthError('');
+    authModalOverlay.hidden = false;
+    document.body.style.overflow = 'hidden';
+    setTimeout(() => authEmail.focus(), 120);
+}
+
+function closeAuthModal() {
+    authModalOverlay.hidden = true;
+    document.body.style.overflow = '';
+    authForm.reset();
+    setAuthError('');
+}
+
+function renderAuthUI() {
+    if (currentUser) {
+        authArea.innerHTML = `
+            <span class="auth-user" title="${currentUser.email}">${currentUser.email}</span>
+            <button class="btn btn-ghost-main auth-btn" id="logoutBtn">Logout</button>
+        `;
+        document.getElementById('logoutBtn').addEventListener('click', logout);
+    } else {
+        authArea.innerHTML = `
+            <button class="btn btn-primary auth-btn" id="loginBtn">Login</button>
+            <button class="btn btn-ghost-main auth-btn" id="signupBtn">Sign Up</button>
+        `;
+        document.getElementById('loginBtn').addEventListener('click', () => openAuthModal('login'));
+        document.getElementById('signupBtn').addEventListener('click', () => openAuthModal('signup'));
+    }
+}
+
+async function handleAuthSubmit(e) {
+    e.preventDefault();
+    setAuthError('');
+
+    const email = authEmail.value.trim();
+    const password = authPassword.value;
+
+    if (!email || !password) {
+        setAuthError('Please enter your email and password.');
+        return;
+    }
+
+    authSubmitBtn.disabled = true;
+    authSubmitBtn.textContent = authMode === 'login' ? 'Logging in...' : 'Creating account...';
+
+    try {
+        const endpoint = authMode === 'login' ? '/auth/login' : '/auth/register';
+        const response = await fetch(`${API_BASE}${endpoint}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password })
+        });
+
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+            throw new Error(data.error || `Authentication failed (${response.status})`);
+        }
+
+        localStorage.setItem(AUTH_TOKEN_KEY, data.token);
+        currentUser = data.user;
+        renderAuthUI();
+        closeAuthModal();
+
+        transactions = [];
+        saveData();
+        renderDashboard();
+        await loadTransactionsFromAPI();
+    } catch (err) {
+        console.error('Authentication error:', err);
+        setAuthError(err.message || 'Authentication failed.');
+    } finally {
+        authSubmitBtn.disabled = false;
+        authSubmitBtn.textContent = authMode === 'login' ? 'Login' : 'Create Account';
+    }
+}
+
+async function logout() {
+    try {
+        if (getAuthToken()) {
+            await authFetch(`${API_BASE}/auth/logout`, { method: 'POST' });
+        }
+    } catch (err) {
+        console.error('Logout request failed:', err);
+    }
+
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    currentUser = null;
+    transactions = [];
+    saveData();
+    renderDashboard();
+    renderAuthUI();
+}
+
+async function restoreAuthSession() {
+    const token = getAuthToken();
+
+    if (!token) {
+        currentUser = null;
+        renderAuthUI();
+        transactions = [];
+        renderDashboard();
+        return false;
+    }
+
+    try {
+        const response = await authFetch(`${API_BASE}/auth/me`);
+
+        if (!response.ok) {
+            localStorage.removeItem(AUTH_TOKEN_KEY);
+            currentUser = null;
+            renderAuthUI();
+            transactions = [];
+            renderDashboard();
+            return false;
+        }
+
+        const data = await response.json();
+        currentUser = data.user;
+        renderAuthUI();
+        return true;
+    } catch (err) {
+        console.error('Could not restore authentication:', err);
+        currentUser = null;
+        transactions = [];
+        renderDashboard();
+        renderAuthUI();
+        return false;
+    }
+}
+
+loginBtn.addEventListener('click', () => openAuthModal('login'));
+signupBtn.addEventListener('click', () => openAuthModal('signup'));
+authModalClose.addEventListener('click', closeAuthModal);
+
+authSwitchBtn.addEventListener('click', () => {
+    openAuthModal(authMode === 'login' ? 'signup' : 'login');
+});
+
+authModalOverlay.addEventListener('click', (e) => {
+    if (e.target === authModalOverlay) closeAuthModal();
+});
+
+authForm.addEventListener('submit', handleAuthSubmit);
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !authModalOverlay.hidden) closeAuthModal();
+});
+
+/* ============================================================
    INIT
    ============================================================ */
-function init() {
-    loadData();
+async function init() {
     populateCategorySelect();
     populateCategoryFilter();
     updateMonthLabel();
     renderDashboard();
+
+    const authenticated = await restoreAuthSession();
+
+    if (authenticated) {
+        await loadTransactionsFromAPI();
+    }
 }
 
 init();

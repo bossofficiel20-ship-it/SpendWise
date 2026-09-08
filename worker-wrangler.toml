@@ -1,0 +1,8 @@
+name = "spendwise-worker"
+main = "worker.js"
+compatibility_date = "2026-09-03"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "spendwise-db"
+database_id = "e20a9b16-5f53-4621-bb74-40c80b38a1ce"
