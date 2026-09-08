@@ -15,12 +15,8 @@ function applyTheme(theme) {
 
 (function initTheme() {
     const saved = localStorage.getItem('expenseTheme');
-    if (saved) {
-        applyTheme(saved);
-    } else {
-        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        applyTheme(prefersDark ? 'dark' : 'light');
-    }
+    // Dark is the default; respect any previously saved theme preference.
+    applyTheme(saved || 'dark');
 })();
 
 themeToggle.addEventListener('click', () => {
@@ -935,3 +931,19 @@ function init() {
 }
 
 init();
+// SpendWise profile dropdown
+const profileToggle = document.getElementById("profileToggle");
+const profileMenu = document.getElementById("profileMenu");
+if (profileToggle && profileMenu) {
+  profileToggle.addEventListener("click", () => profileMenu.classList.toggle("show"));
+  document.addEventListener("click", (e) => {
+    if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) profileMenu.classList.remove("show");
+  });
+}
+
+// SpendWise mobile menu
+const spendwiseMenu = document.getElementById("spendwiseMenu");
+const spendwiseLinks = document.querySelector(".spendwise-links");
+if (spendwiseMenu && spendwiseLinks) {
+  spendwiseMenu.addEventListener("click", () => spendwiseLinks.classList.toggle("mobile-open"));
+}
