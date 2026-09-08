@@ -857,6 +857,11 @@ let isSaving = false;
 
 txnForm.addEventListener('submit', async (e) => {
     e.preventDefault();
+    if (!currentUser) {
+        closeModal();
+        openAuthModal("login");
+        return;
+    }
     if (isSaving) return;
 
     const amount = validateForm();
